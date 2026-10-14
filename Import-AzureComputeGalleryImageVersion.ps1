@@ -35,6 +35,8 @@ The name for the Resource Group that contains the Azure Compute Gallery.
 The accelerated networking feature for the Image Definition.
 .PARAMETER ImageDefinitionArchitecture
 The processor architecture for the operating system.
+.PARAMETER ImageDefinitionDiskControllerTypes
+The disk controller types for the Image Definition.
 .PARAMETER ImageDefinitionHibernation
 The hibernation feature for the Image Definition
 .PARAMETER ImageDefinitionHyperVGeneration
@@ -66,6 +68,7 @@ The name for the Image Version.
     -ComputeGalleryName 'cg_shared_d_eu' `
     -ComputeGalleryResourceGroupName 'rg-images-d-eu' `
     -ImageDefinitionAcceleratedNetworking 'False' `
+    -ImageDefinitionDiskControllerTypes 'SCSI, NVME' `
     -ImageDefinitionHibernation 'False' `
     -ImageDefinitionHyperVGeneration 'V2' `
     -ImageDefinitionName 'WindowsServer2019Datacenter' `
