@@ -111,8 +111,8 @@ param(
     [string]$ImageDefinitionArchitecture = 'x64',
 
     [parameter(Mandatory = $false)]
-    [ValidateSet('SCSI', 'SCSI,NVME')]
-    [string]$ImageDefinitionDiskControllerType = 'SCSI, NVME',
+    [ValidateSet('SCSI', 'SCSI, NVME')]
+    [string]$ImageDefinitionDiskControllerTypes = 'SCSI, NVME',
 
     [parameter(Mandatory = $false)]
     [ValidateSet('True', 'False')]
@@ -172,16 +172,19 @@ catch {
 if (-Not (Get-ChildItem -Path . -Filter 'azcopy.exe' -Recurse).FullName) {
     Invoke-WebRequest -Uri $AzCopyDownloadUrl -OutFile 'azcopy.zip'
     Expand-Archive -Path 'azcopy.zip' -Force
+    Write-Output "AzCopy downloaded and extracted."
 }
 $AzCopyExe = (Get-ChildItem -Path . -Filter 'azcopy.exe' -Recurse).FullName
 
 # Gets the location of the resource group containing the Azure Compute Gallery
 $ResourceGroupPath = '/subscriptions/' + $SubscriptionId + '/resourcegroups/' + $ComputeGalleryResourceGroupName + '?api-version=2021-04-01'
 $Location = ((Invoke-AzRestMethod -Method 'Get' -Path $ResourceGroupPath).Content | ConvertFrom-Json).location
+Write-Output "Location of the resource group containing the Azure Compute Gallery: $Location"
 
 # Checks if the Compute Gallery exists
 $GalleryPath = '/subscriptions/' + $SubscriptionId + '/resourceGroups/' + $ComputeGalleryResourceGroupName + '/providers/Microsoft.Compute/galleries/' + $ComputeGalleryName + '?api-version=2025-12-03'
 $Gallery = Invoke-AzRestMethod -Method 'Get' -Path $GalleryPath
+Write-Output "Checked if the Compute Gallery exists. Status code: $($Gallery.StatusCode)"
 
 # Create Compute Gallery if it doesn't exist
 if ($Gallery.StatusCode -ne 200) { 
@@ -189,11 +192,13 @@ if ($Gallery.StatusCode -ne 200) {
         location = $Location
     } | ConvertTo-Json
     Invoke-AzRestMethod -Method 'Put' -Path $GalleryPath -Payload $GalleryPayload -WaitForCompletion | Out-Null
+    Write-Output "Created the Compute Gallery: $ComputeGalleryName."
 }
 
 # Checks if the Image Definition exists
 $ImageDefinitionPath = '/subscriptions/' + $SubscriptionId + '/resourceGroups/' + $ComputeGalleryResourceGroupName + '/providers/Microsoft.Compute/galleries/' + $ComputeGalleryName + '/images/' + $ImageDefinitionName + '?api-version=2025-12-03'
 $ImageDefinition = Invoke-AzRestMethod -Method 'Get' -Path $ImageDefinitionPath
+Write-Output "Checked if the Image Definition exists. Status code: $($ImageDefinition.StatusCode)"
 
 # Create the Image Definition if it doesn't exist
 if ($ImageDefinition.StatusCode -ne 200) {
@@ -202,7 +207,7 @@ if ($ImageDefinition.StatusCode -ne 200) {
         properties = @{
             architecture     = $ImageDefinitionArchitecture
             features         = @(
-                @{Name = 'DiskControllerTypes'; Value = $ImageDefinitionDiskControllerType },
+                @{Name = 'DiskControllerTypes'; Value = $ImageDefinitionDiskControllerTypes },
                 @{Name = 'IsAcceleratedNetworkSupported'; Value = $ImageDefinitionAcceleratedNetworking },
                 @{Name = 'IsHibernateSupported'; Value = $ImageDefinitionHibernation },
                 @{Name = 'SecurityType'; Value = $ImageDefinitionSecurityType }
@@ -218,6 +223,7 @@ if ($ImageDefinition.StatusCode -ne 200) {
         }
     } | ConvertTo-Json -Depth 4
     Invoke-AzRestMethod -Method 'Put' -Path $ImageDefinitionPath -Payload $ImageDefinitionPayload -WaitForCompletion | Out-Null
+    Write-Output "Created the Image Definition: $ImageDefinitionName."
 }
 
 # Get the downloaded disks / VHDs from the Downloads folder
@@ -225,7 +231,7 @@ $Vhds = Get-ChildItem -Path "$($HOME)\Downloads\disk-$($ImageDefinitionName)-*.v
 
 # Throw an error if the disks are not found
 if ($Vhds.Count -eq 0) {
-    Write-Host -Message 'Disks were not found. Be sure to use the same Image Definition Name used in the export script.' -ForegroundColor 'Red'
+    Write-Output "Disks were not found. Be sure to use the same Image Definition Name used in the export script."
     throw
 }
 
@@ -251,7 +257,7 @@ for ($i = 0; $i -lt $Vhds.Count; $i++) {
             osType = $ImageDefinitionOsType
             supportedCapabilities = @{
                 acceleratedNetwork =  if ($ImageDefinitionAcceleratedNetworking -eq 'True') { $true } else { $false }
-                diskControllerTypes = $ImageDefinitionDiskControllerType
+                diskControllerTypes = $ImageDefinitionDiskControllerTypes
                 supportedSecurityOption = $ImageDefinitionSupportedSecurityOption
             }
             supportsHibernation =  if ($ImageDefinitionHibernation -eq 'True') { $true } else { $false }
@@ -264,6 +270,8 @@ for ($i = 0; $i -lt $Vhds.Count; $i++) {
 
     if ($Disk.StatusCode -notin 200, 201, 202) {
         throw "Managed disk creation failed. HTTP $($Disk.StatusCode): $($Disk.Content)"
+    } else {
+        Write-Output "Managed disk created successfully: $DiskName"
     }
 
     # Request Managed Disk SAS
@@ -276,7 +284,9 @@ for ($i = 0; $i -lt $Vhds.Count; $i++) {
 
     if ($DiskGrantAccess.StatusCode -notin 200, 202) {
         throw "Unable to grant write access. HTTP $($DiskGrantAccess.StatusCode): $($DiskGrantAccess.Content)"
-    } 
+    } else {
+        Write-Output "Granted write access for managed disk: $DiskName"
+    }
 
     $AccessSAS = (Invoke-AzRestMethod -Method 'GET' -Uri $DiskGrantAccess.Headers.Location.AbsoluteUri).Content | ConvertFrom-Json | Select-Object -ExpandProperty accessSAS
     
@@ -285,22 +295,25 @@ for ($i = 0; $i -lt $Vhds.Count; $i++) {
     }
 
     # Upload the VHD to a Managed Disk using AzCopy
-    Write-Host " Uploading VHD with AzCopy..."
-    $AzCopyExitCode = (Start-Process -FilePath $AzCopyExe -ArgumentList "copy $($Vhds[$i].FullName) $AccessSAS --blob-type PageBlob" -Wait -PassThru -NoNewWindow).ExitCode
-
+    Write-Output " Uploading VHD with AzCopy: $($Vhds[$i].FullName)"
+    & $AzCopyExe copy $($Vhds[$i].FullName) $AccessSAS --blob-type PageBlob
+    $AzCopyExitCode = $LASTEXITCODE
+    
     # Revoke Managed Disk SAS
     $DiskRevokeAccessPath = '/subscriptions/' + $SubscriptionId + '/resourceGroups/' + $ComputeGalleryResourceGroupName + '/providers/Microsoft.Compute/disks/' + $DiskName + '/endGetAccess?api-version=2026-03-02'
-    $DiskRevokeAccess = Invoke-AzRestMethod -Method 'POST' -Path $DiskRevokeAccessPath 
+    $DiskRevokeAccess = Invoke-AzRestMethod -Method 'POST' -Path $DiskRevokeAccessPath
 
     if ($DiskRevokeAccess.StatusCode -notin 200, 202) {
         throw "Unable to revoke disk access. HTTP $($DiskRevokeAccess.StatusCode): $($DiskRevokeAccess.Content)"
+    } else {
+        Write-Output "Revoked disk access for managed disk: $DiskName"
     }
 
     if ($AzCopyExitCode -ne 0) {
-        Write-Host "AzCopy failed with exit code $AzCopyExitCode."
+        Write-Output "AzCopy failed with exit code $AzCopyExitCode."
         throw
     } else {
-        Write-Host "AzCopy upload completed successfully for $($Vhds[$i].FullName)"
+        Write-Output "AzCopy upload completed successfully for $($Vhds[$i].FullName)"
     }
 
     # Gets the information for the Managed Disk
@@ -334,11 +347,14 @@ if ($Vhds.Count -gt 1) {
     $ImageVersionPayload.properties.storageProfile.Add('dataDiskImages', $DataDiskImage)
 }
 
+Write-Output "Creating the Image Version: $ImageVersionName"
 $ImageVersionPath = '/subscriptions/' + $SubscriptionId + '/resourceGroups/' + $ComputeGalleryResourceGroupName + '/providers/Microsoft.Compute/galleries/' + $ComputeGalleryName + '/images/' + $ImageDefinitionName + '/versions/' + $ImageVersionName + '?api-version=2025-03-03'
 $ImageVersion = Invoke-AzRestMethod -Method 'PUT' -Path $ImageVersionPath -Payload $($ImageVersionPayload | ConvertTo-Json -Depth 5) -WaitForCompletion
 
 if ($ImageVersion.StatusCode -notin 200, 201, 202) {
     throw "Failed to create the Image Version. HTTP $($ImageVersion.StatusCode): $($ImageVersion.Content)"
+} else {
+    Write-Output "Successfully created the Image Version: $ImageVersionName"
 }
 
 # Deletes the Managed Disk(s)
@@ -346,4 +362,7 @@ for ($i = 0; $i -lt $Vhds.Count; $i++) {
     $DiskName = $DiskPrefix + $i.ToString()
     $DiskDeletePath = '/subscriptions/' + $SubscriptionId + '/resourceGroups/' + $ComputeGalleryResourceGroupName + '/providers/Microsoft.Compute/disks/' + $DiskName + '?api-version=2026-03-02'
     Invoke-AzRestMethod -Method 'DELETE' -Path $DiskDeletePath | Out-Null
+    Write-Output "Deleted managed disk: $DiskName"
 }
+
+Write-Output "Completed import of Azure Compute Gallery Image Version: $ImageVersionName"
